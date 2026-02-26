@@ -47,10 +47,196 @@ const JWT_SECRET = "supersecretkey";
       `CREATE TABLE IF NOT EXISTS communities (
         id SERIAL PRIMARY KEY,
         name VARCHAR(100) UNIQUE NOT NULL,
-        description TEXT
+        description TEXT,
+        category VARCHAR(50),
+        password VARCHAR(255) NOT NULL,
+        cover_image VARCHAR(500),
+        created_by INT REFERENCES profile(id),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`
     );
+    
+    // Ensure all columns exist in case table was created before
+    await pool.query(`
+      ALTER TABLE communities 
+      ADD COLUMN IF NOT EXISTS description TEXT
+    `);
+    await pool.query(`
+      ALTER TABLE communities 
+      ADD COLUMN IF NOT EXISTS category VARCHAR(50) DEFAULT 'General'
+    `);
+    await pool.query(`
+      ALTER TABLE communities 
+      ADD COLUMN IF NOT EXISTS password VARCHAR(255)
+    `);
+    await pool.query(`
+      ALTER TABLE communities 
+      ADD COLUMN IF NOT EXISTS cover_image VARCHAR(500)
+    `);
+    await pool.query(`
+      ALTER TABLE communities 
+      ADD COLUMN IF NOT EXISTS created_by INT REFERENCES profile(id)
+    `);
+    await pool.query(`
+      ALTER TABLE communities 
+      ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    `);
+    
     console.log("✅ Communities table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS community_members (
+        id SERIAL PRIMARY KEY,
+        community_id INT REFERENCES communities(id) ON DELETE CASCADE,
+        user_id INT REFERENCES profile(id) ON DELETE CASCADE,
+        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(community_id, user_id)
+      )`
+    );
+    console.log("✅ Community Members table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS community_posts (
+        id SERIAL PRIMARY KEY,
+        community_id INT REFERENCES communities(id) ON DELETE CASCADE,
+        user_id INT REFERENCES profile(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        post_type VARCHAR(50) DEFAULT 'post',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+    console.log("✅ Community Posts table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS caf_forms (
+        id SERIAL PRIMARY KEY,
+        college_id INT REFERENCES profile(id) ON DELETE CASCADE,
+        company_name VARCHAR(200) NOT NULL,
+        company_email VARCHAR(100),
+        company_phone VARCHAR(20),
+        job_role VARCHAR(200),
+        job_description TEXT,
+        eligibility_criteria TEXT,
+        salary_package VARCHAR(100),
+        application_deadline DATE,
+        status VARCHAR(50) DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+    console.log("✅ CAF Forms table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS companies (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(200) NOT NULL,
+        email VARCHAR(100),
+        phone VARCHAR(20),
+        website VARCHAR(200),
+        industry VARCHAR(100),
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+    console.log("✅ Companies table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS jobs (
+        id SERIAL PRIMARY KEY,
+        company_id INT REFERENCES companies(id) ON DELETE CASCADE,
+        title VARCHAR(200) NOT NULL,
+        description TEXT,
+        job_type VARCHAR(50),
+        location VARCHAR(200),
+        salary VARCHAR(100),
+        requirements TEXT,
+        posted_by INT REFERENCES profile(id),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+    console.log("✅ Jobs table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS events (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(200) NOT NULL,
+        description TEXT,
+        event_date DATE,
+        event_time TIME,
+        location VARCHAR(200),
+        organizer_id INT REFERENCES profile(id),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+    console.log("✅ Events table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS documents (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(200) NOT NULL,
+        description TEXT,
+        file_url VARCHAR(500),
+        uploaded_by INT REFERENCES profile(id),
+        document_type VARCHAR(50),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+    console.log("✅ Documents table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS applications (
+        id SERIAL PRIMARY KEY,
+        student_id INT REFERENCES profile(id) ON DELETE CASCADE,
+        company_name VARCHAR(200) NOT NULL,
+        role VARCHAR(200) NOT NULL,
+        applied_date DATE DEFAULT CURRENT_DATE,
+        status VARCHAR(50) DEFAULT 'applied',
+        location VARCHAR(200),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+    console.log("✅ Applications table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS student_profiles (
+        id SERIAL PRIMARY KEY,
+        student_id INT REFERENCES profile(id) ON DELETE CASCADE UNIQUE,
+        resume_uploaded BOOLEAN DEFAULT false,
+        resume_url VARCHAR(500),
+        skills TEXT,
+        course VARCHAR(100),
+        profile_completion INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+    console.log("✅ Student Profiles table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS placement_events (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(200) NOT NULL,
+        description TEXT,
+        event_type VARCHAR(50),
+        event_date DATE,
+        event_time TIME,
+        location VARCHAR(200),
+        is_online BOOLEAN DEFAULT false,
+        organizer_id INT REFERENCES profile(id),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+    console.log("✅ Placement Events table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS notifications (
+        id SERIAL PRIMARY KEY,
+        user_id INT REFERENCES profile(id) ON DELETE CASCADE,
+        title VARCHAR(200) NOT NULL,
+        message TEXT,
+        is_read BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+    console.log("✅ Notifications table ready");
   } catch (err) {
     console.error("❌ Error creating tables:", err);
   }
@@ -67,9 +253,9 @@ app.post("/auth/register", async (req, res) => {
     }
 
     // Validate role
-    const validRoles = ['student', 'college'];
+    const validRoles = ['student', 'college', 'admin'];
     if (!validRoles.includes(role)) {
-      return res.status(400).json({ error: "Invalid role. Only student and college registration allowed." });
+      return res.status(400).json({ error: "Invalid role." });
     }
 
     // Role-specific validation
@@ -159,10 +345,20 @@ app.get("/profile/:id", async (req, res) => {
 });
 
 // ===== COMMUNITIES =====
-// Get all communities
+// Get all communities with member count
 app.get("/communities", async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM communities ORDER BY id ASC");
+    const result = await pool.query(`
+      SELECT c.*, 
+             p.name as creator_name, 
+             p.role as creator_role,
+             COUNT(cm.id) as member_count
+      FROM communities c
+      LEFT JOIN profile p ON c.created_by = p.id
+      LEFT JOIN community_members cm ON c.id = cm.community_id
+      GROUP BY c.id, p.name, p.role
+      ORDER BY c.created_at DESC
+    `);
     res.json(result.rows);
   } catch (err) {
     console.error("Fetch communities error:", err);
@@ -170,23 +366,723 @@ app.get("/communities", async (req, res) => {
   }
 });
 
+// Get single community details
+app.get("/communities/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(`
+      SELECT c.*, 
+             p.name as creator_name, 
+             p.role as creator_role,
+             COUNT(cm.id) as member_count
+      FROM communities c
+      LEFT JOIN profile p ON c.created_by = p.id
+      LEFT JOIN community_members cm ON c.id = cm.community_id
+      WHERE c.id = $1
+      GROUP BY c.id, p.name, p.role
+    `, [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Community not found" });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Fetch community error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch community" });
+  }
+});
+
 // Create a new community
 app.post("/communities", async (req, res) => {
   try {
-    const { name, description } = req.body;
-    if (!name) return res.status(400).json({ error: "Community name is required" });
+    const { name, description, category, password, cover_image, created_by } = req.body;
+    if (!name || !password || !created_by) {
+      return res.status(400).json({ error: "Name, password, and creator are required" });
+    }
 
     const existing = await pool.query("SELECT * FROM communities WHERE name=$1", [name]);
-    if (existing.rows.length > 0) return res.status(400).json({ error: "Community already exists" });
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ error: "Community already exists" });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
 
     const result = await pool.query(
-      "INSERT INTO communities (name, description) VALUES ($1, $2) RETURNING id, name, description",
-      [name, description || ""]
+      `INSERT INTO communities (name, description, category, password, cover_image, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, name, description, category, cover_image, created_by, created_at`,
+      [name, description || "", category || "General", hashedPassword, cover_image || null, created_by]
     );
+    
+    // Auto-join creator to community
+    await pool.query(
+      "INSERT INTO community_members (community_id, user_id) VALUES ($1, $2)",
+      [result.rows[0].id, created_by]
+    );
+    
     res.json(result.rows[0]);
   } catch (err) {
     console.error("Create community error:", err);
     res.status(500).json({ error: err.message || "Failed to create community" });
+  }
+});
+
+// Join community with password
+app.post("/communities/:id/join", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { user_id, password } = req.body;
+    
+    if (!user_id || !password) {
+      return res.status(400).json({ error: "User ID and password are required" });
+    }
+
+    // Get community
+    const community = await pool.query("SELECT * FROM communities WHERE id=$1", [id]);
+    if (community.rows.length === 0) {
+      return res.status(404).json({ error: "Community not found" });
+    }
+
+    // Check if already a member
+    const existing = await pool.query(
+      "SELECT * FROM community_members WHERE community_id=$1 AND user_id=$2",
+      [id, user_id]
+    );
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ error: "Already a member of this community" });
+    }
+
+    // Verify password
+    const match = await bcrypt.compare(password, community.rows[0].password);
+    if (!match) {
+      return res.status(400).json({ error: "Invalid community password" });
+    }
+
+    // Add member
+    await pool.query(
+      "INSERT INTO community_members (community_id, user_id) VALUES ($1, $2)",
+      [id, user_id]
+    );
+
+    res.json({ message: "Successfully joined community" });
+  } catch (err) {
+    console.error("Join community error:", err);
+    res.status(500).json({ error: err.message || "Failed to join community" });
+  }
+});
+
+// Check if user is member
+app.get("/communities/:id/is-member/:userId", async (req, res) => {
+  try {
+    const { id, userId } = req.params;
+    const result = await pool.query(
+      "SELECT * FROM community_members WHERE community_id=$1 AND user_id=$2",
+      [id, userId]
+    );
+    res.json({ isMember: result.rows.length > 0 });
+  } catch (err) {
+    console.error("Check membership error:", err);
+    res.status(500).json({ error: err.message || "Failed to check membership" });
+  }
+});
+
+// Get community members
+app.get("/communities/:id/members", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(`
+      SELECT p.id, p.name, p.email, p.role, cm.joined_at
+      FROM community_members cm
+      JOIN profile p ON cm.user_id = p.id
+      WHERE cm.community_id = $1
+      ORDER BY cm.joined_at DESC
+    `, [id]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch members error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch members" });
+  }
+});
+
+// Get community posts
+app.get("/communities/:id/posts", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(`
+      SELECT cp.*, p.name as author_name, p.role as author_role
+      FROM community_posts cp
+      JOIN profile p ON cp.user_id = p.id
+      WHERE cp.community_id = $1
+      ORDER BY cp.created_at DESC
+    `, [id]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch posts error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch posts" });
+  }
+});
+
+// Create community post
+app.post("/communities/:id/posts", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { user_id, content, post_type } = req.body;
+    
+    if (!user_id || !content) {
+      return res.status(400).json({ error: "User ID and content are required" });
+    }
+
+    // Check if user is member
+    const member = await pool.query(
+      "SELECT * FROM community_members WHERE community_id=$1 AND user_id=$2",
+      [id, user_id]
+    );
+    if (member.rows.length === 0) {
+      return res.status(403).json({ error: "Must be a member to post" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO community_posts (community_id, user_id, content, post_type)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [id, user_id, content, post_type || 'post']
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Create post error:", err);
+    res.status(500).json({ error: err.message || "Failed to create post" });
+  }
+});
+
+// Delete community (admin/creator only)
+app.delete("/communities/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { user_id } = req.body;
+    
+    // Check if user is creator or admin
+    const community = await pool.query("SELECT * FROM communities WHERE id=$1", [id]);
+    if (community.rows.length === 0) {
+      return res.status(404).json({ error: "Community not found" });
+    }
+    
+    const user = await pool.query("SELECT * FROM profile WHERE id=$1", [user_id]);
+    if (community.rows[0].created_by !== user_id && user.rows[0].role !== 'admin') {
+      return res.status(403).json({ error: "Only creator or admin can delete community" });
+    }
+
+    await pool.query("DELETE FROM communities WHERE id=$1", [id]);
+    res.json({ message: "Community deleted successfully" });
+  } catch (err) {
+    console.error("Delete community error:", err);
+    res.status(500).json({ error: err.message || "Failed to delete community" });
+  }
+});
+
+// Remove member (admin/creator only)
+app.delete("/communities/:id/members/:userId", async (req, res) => {
+  try {
+    const { id, userId } = req.params;
+    const { requester_id } = req.body;
+    
+    // Check if requester is creator or admin
+    const community = await pool.query("SELECT * FROM communities WHERE id=$1", [id]);
+    const user = await pool.query("SELECT * FROM profile WHERE id=$1", [requester_id]);
+    
+    if (community.rows[0].created_by !== requester_id && user.rows[0].role !== 'admin') {
+      return res.status(403).json({ error: "Only creator or admin can remove members" });
+    }
+
+    await pool.query(
+      "DELETE FROM community_members WHERE community_id=$1 AND user_id=$2",
+      [id, userId]
+    );
+    res.json({ message: "Member removed successfully" });
+  } catch (err) {
+    console.error("Remove member error:", err);
+    res.status(500).json({ error: err.message || "Failed to remove member" });
+  }
+});
+
+// ===== CAF FORMS (College Application Forms) =====
+// Get all CAF forms (for admin) or college-specific forms
+app.get("/caf-forms", async (req, res) => {
+  try {
+    const { college_id } = req.query;
+    let query = "SELECT * FROM caf_forms ORDER BY created_at DESC";
+    let params = [];
+    
+    if (college_id) {
+      query = "SELECT * FROM caf_forms WHERE college_id=$1 ORDER BY created_at DESC";
+      params = [college_id];
+    }
+    
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch CAF forms error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch CAF forms" });
+  }
+});
+
+// Create CAF form
+app.post("/caf-forms", async (req, res) => {
+  try {
+    const { college_id, company_name, company_email, company_phone, job_role, job_description, eligibility_criteria, salary_package, application_deadline } = req.body;
+    
+    if (!college_id || !company_name || !job_role) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO caf_forms (college_id, company_name, company_email, company_phone, job_role, job_description, eligibility_criteria, salary_package, application_deadline)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING *`,
+      [college_id, company_name, company_email, company_phone, job_role, job_description, eligibility_criteria, salary_package, application_deadline]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Create CAF form error:", err);
+    res.status(500).json({ error: err.message || "Failed to create CAF form" });
+  }
+});
+
+// Update CAF form
+app.put("/caf-forms/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { company_name, company_email, company_phone, job_role, job_description, eligibility_criteria, salary_package, application_deadline, status } = req.body;
+    
+    const result = await pool.query(
+      `UPDATE caf_forms 
+       SET company_name=$1, company_email=$2, company_phone=$3, job_role=$4, job_description=$5, 
+           eligibility_criteria=$6, salary_package=$7, application_deadline=$8, status=$9
+       WHERE id=$10
+       RETURNING *`,
+      [company_name, company_email, company_phone, job_role, job_description, eligibility_criteria, salary_package, application_deadline, status, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "CAF form not found" });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Update CAF form error:", err);
+    res.status(500).json({ error: err.message || "Failed to update CAF form" });
+  }
+});
+
+// Delete CAF form
+app.delete("/caf-forms/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query("DELETE FROM caf_forms WHERE id=$1 RETURNING *", [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "CAF form not found" });
+    }
+    
+    res.json({ message: "CAF form deleted successfully" });
+  } catch (err) {
+    console.error("Delete CAF form error:", err);
+    res.status(500).json({ error: err.message || "Failed to delete CAF form" });
+  }
+});
+
+// ===== STUDENTS INFO (for college dashboard) =====
+app.get("/students", async (req, res) => {
+  try {
+    const { college } = req.query;
+    let query = "SELECT id, name, email, college, pass_out_year, created_at FROM profile WHERE role='student' ORDER BY created_at DESC";
+    let params = [];
+    
+    if (college) {
+      query = "SELECT id, name, email, college, pass_out_year, created_at FROM profile WHERE role='student' AND college=$1 ORDER BY created_at DESC";
+      params = [college];
+    }
+    
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch students error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch students" });
+  }
+});
+
+// ===== ADMIN STATS =====
+app.get("/admin/stats", async (req, res) => {
+  try {
+    // Total users
+    const totalUsers = await pool.query("SELECT COUNT(*) FROM profile");
+    
+    // Total students
+    const totalStudents = await pool.query("SELECT COUNT(*) FROM profile WHERE role='student'");
+    
+    // Total colleges
+    const totalColleges = await pool.query("SELECT COUNT(*) FROM profile WHERE role='college'");
+    
+    // Total communities
+    const totalCommunities = await pool.query("SELECT COUNT(*) FROM communities");
+    
+    // Total CAF forms
+    const totalCAFForms = await pool.query("SELECT COUNT(*) FROM caf_forms");
+    
+    // Total companies
+    const totalCompanies = await pool.query("SELECT COUNT(*) FROM companies");
+    
+    res.json({
+      totalUsers: parseInt(totalUsers.rows[0].count),
+      totalStudents: parseInt(totalStudents.rows[0].count),
+      totalColleges: parseInt(totalColleges.rows[0].count),
+      totalCommunities: parseInt(totalCommunities.rows[0].count),
+      totalCAFForms: parseInt(totalCAFForms.rows[0].count),
+      totalCompanies: parseInt(totalCompanies.rows[0].count),
+    });
+  } catch (err) {
+    console.error("Fetch admin stats error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch admin stats" });
+  }
+});
+
+// ===== GET ALL COLLEGES =====
+app.get("/colleges", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT id, name, email, college, department, phone, created_at FROM profile WHERE role='college' ORDER BY created_at DESC"
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch colleges error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch colleges" });
+  }
+});
+
+// ===== COMPANIES =====
+app.get("/companies", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM companies ORDER BY created_at DESC");
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch companies error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch companies" });
+  }
+});
+
+app.post("/companies", async (req, res) => {
+  try {
+    const { name, email, phone, website, industry, description } = req.body;
+    
+    if (!name) {
+      return res.status(400).json({ error: "Company name is required" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO companies (name, email, phone, website, industry, description)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [name, email, phone, website, industry, description]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Create company error:", err);
+    res.status(500).json({ error: err.message || "Failed to create company" });
+  }
+});
+
+// ===== EVENTS =====
+app.get("/events", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM events ORDER BY event_date DESC");
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch events error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch events" });
+  }
+});
+
+app.post("/events", async (req, res) => {
+  try {
+    const { title, description, event_date, event_time, location, organizer_id } = req.body;
+    
+    if (!title || !event_date) {
+      return res.status(400).json({ error: "Title and event date are required" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO events (title, description, event_date, event_time, location, organizer_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [title, description, event_date, event_time, location, organizer_id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Create event error:", err);
+    res.status(500).json({ error: err.message || "Failed to create event" });
+  }
+});
+
+// ===== DOCUMENTS =====
+app.get("/documents", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM documents ORDER BY created_at DESC");
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch documents error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch documents" });
+  }
+});
+
+app.post("/documents", async (req, res) => {
+  try {
+    const { title, description, file_url, uploaded_by, document_type } = req.body;
+    
+    if (!title || !file_url) {
+      return res.status(400).json({ error: "Title and file URL are required" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO documents (title, description, file_url, uploaded_by, document_type)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [title, description, file_url, uploaded_by, document_type]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Create document error:", err);
+    res.status(500).json({ error: err.message || "Failed to create document" });
+  }
+});
+
+// ===== STUDENT DASHBOARD STATS =====
+app.get("/student/dashboard-stats/:studentId", async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    
+    // Get applications count
+    const totalApplications = await pool.query("SELECT COUNT(*) FROM applications WHERE student_id=$1", [studentId]);
+    const shortlisted = await pool.query("SELECT COUNT(*) FROM applications WHERE student_id=$1 AND status='shortlisted'", [studentId]);
+    const interviews = await pool.query("SELECT COUNT(*) FROM applications WHERE student_id=$1 AND status='interview'", [studentId]);
+    const offers = await pool.query("SELECT COUNT(*) FROM applications WHERE student_id=$1 AND status='selected'", [studentId]);
+    
+    // Get total jobs and internships available
+    const totalJobs = await pool.query("SELECT COUNT(*) FROM jobs");
+    
+    // Get student profile
+    const profile = await pool.query("SELECT * FROM student_profiles WHERE student_id=$1", [studentId]);
+    
+    res.json({
+      totalJobs: parseInt(totalJobs.rows[0].count),
+      totalInternships: parseInt(totalJobs.rows[0].count), // Same as jobs for now
+      applicationsSubmitted: parseInt(totalApplications.rows[0].count),
+      shortlisted: parseInt(shortlisted.rows[0].count),
+      upcomingInterviews: parseInt(interviews.rows[0].count),
+      offers: parseInt(offers.rows[0].count),
+      profileCompletion: profile.rows[0]?.profile_completion || 0,
+      resumeUploaded: profile.rows[0]?.resume_uploaded || false,
+    });
+  } catch (err) {
+    console.error("Fetch student stats error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch student stats" });
+  }
+});
+
+// ===== APPLICATIONS =====
+app.get("/applications/:studentId", async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const result = await pool.query(
+      "SELECT * FROM applications WHERE student_id=$1 ORDER BY applied_date DESC",
+      [studentId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch applications error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch applications" });
+  }
+});
+
+app.post("/applications", async (req, res) => {
+  try {
+    const { student_id, company_name, role, location, status } = req.body;
+    
+    if (!student_id || !company_name || !role) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO applications (student_id, company_name, role, location, status)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [student_id, company_name, role, location || null, status || 'applied']
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Create application error:", err);
+    res.status(500).json({ error: err.message || "Failed to create application" });
+  }
+});
+
+// ===== STUDENT PROFILE =====
+app.get("/student-profile/:studentId", async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    let result = await pool.query("SELECT * FROM student_profiles WHERE student_id=$1", [studentId]);
+    
+    if (result.rows.length === 0) {
+      // Create default profile if doesn't exist
+      result = await pool.query(
+        "INSERT INTO student_profiles (student_id) VALUES ($1) RETURNING *",
+        [studentId]
+      );
+    }
+    
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Fetch student profile error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch student profile" });
+  }
+});
+
+app.put("/student-profile/:studentId", async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const { resume_uploaded, resume_url, skills, course, profile_completion } = req.body;
+    
+    const result = await pool.query(
+      `UPDATE student_profiles 
+       SET resume_uploaded=$1, resume_url=$2, skills=$3, course=$4, profile_completion=$5
+       WHERE student_id=$6
+       RETURNING *`,
+      [resume_uploaded, resume_url, skills, course, profile_completion, studentId]
+    );
+    
+    if (result.rows.length === 0) {
+      // Create if doesn't exist
+      const newResult = await pool.query(
+        `INSERT INTO student_profiles (student_id, resume_uploaded, resume_url, skills, course, profile_completion)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING *`,
+        [studentId, resume_uploaded, resume_url, skills, course, profile_completion]
+      );
+      return res.json(newResult.rows[0]);
+    }
+    
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Update student profile error:", err);
+    res.status(500).json({ error: err.message || "Failed to update student profile" });
+  }
+});
+
+// ===== PLACEMENT EVENTS =====
+app.get("/placement-events", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM placement_events WHERE event_date >= CURRENT_DATE ORDER BY event_date ASC"
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch placement events error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch placement events" });
+  }
+});
+
+app.post("/placement-events", async (req, res) => {
+  try {
+    const { title, description, event_type, event_date, event_time, location, is_online, organizer_id } = req.body;
+    
+    if (!title || !event_date) {
+      return res.status(400).json({ error: "Title and event date are required" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO placement_events (title, description, event_type, event_date, event_time, location, is_online, organizer_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [title, description, event_type, event_date, event_time, location, is_online, organizer_id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Create placement event error:", err);
+    res.status(500).json({ error: err.message || "Failed to create placement event" });
+  }
+});
+
+// ===== NOTIFICATIONS =====
+app.get("/notifications/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const result = await pool.query(
+      "SELECT * FROM notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 10",
+      [userId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch notifications error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch notifications" });
+  }
+});
+
+app.post("/notifications", async (req, res) => {
+  try {
+    const { user_id, title, message } = req.body;
+    
+    if (!user_id || !title) {
+      return res.status(400).json({ error: "User ID and title are required" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO notifications (user_id, title, message)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [user_id, title, message]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Create notification error:", err);
+    res.status(500).json({ error: err.message || "Failed to create notification" });
+  }
+});
+
+app.put("/notifications/:id/read", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      "UPDATE notifications SET is_read=true WHERE id=$1 RETURNING *",
+      [id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Mark notification read error:", err);
+    res.status(500).json({ error: err.message || "Failed to mark notification as read" });
+  }
+});
+
+// ===== COLLEGE ANALYTICS =====
+app.get("/college/analytics", async (req, res) => {
+  try {
+    const totalStudents = await pool.query("SELECT COUNT(*) FROM profile WHERE role='student'");
+    const totalCompanies = await pool.query("SELECT COUNT(*) FROM companies");
+    const totalOffers = await pool.query("SELECT COUNT(*) FROM applications WHERE status='selected'");
+    const totalPlacements = await pool.query("SELECT COUNT(DISTINCT student_id) FROM applications WHERE status='selected'");
+    
+    const placementPercentage = totalStudents.rows[0].count > 0 
+      ? ((parseInt(totalPlacements.rows[0].count) / parseInt(totalStudents.rows[0].count)) * 100).toFixed(2)
+      : 0;
+
+    res.json({
+      totalStudents: parseInt(totalStudents.rows[0].count),
+      totalCompanies: parseInt(totalCompanies.rows[0].count),
+      totalOffers: parseInt(totalOffers.rows[0].count),
+      totalPlacements: parseInt(totalPlacements.rows[0].count),
+      placementPercentage: parseFloat(placementPercentage),
+    });
+  } catch (err) {
+    console.error("Fetch college analytics error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch college analytics" });
   }
 });
 
