@@ -12,8 +12,8 @@ const PORT = 8000;
 const pool = new Pool({
   user: "postgres",          // your DB username
   host: "127.0.0.1",
-  database: "alumni_db",     // your DB name
-  password: "0000",          // your DB password
+  database: "information",     // your DB name
+  password: "root",          // your DB password
   port: 5432,
 });
 
@@ -32,9 +32,13 @@ const JWT_SECRET = "supersecretkey";
         id SERIAL PRIMARY KEY,
         name VARCHAR(100) NOT NULL,
         email VARCHAR(100) UNIQUE NOT NULL,
+        role VARCHAR(20) NOT NULL DEFAULT 'student',
         college VARCHAR(100),
         pass_out_year INT,
-        password VARCHAR(255)
+        department VARCHAR(100),
+        phone VARCHAR(20),
+        password VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`
     );
     console.log("✅ Profile table ready");
@@ -55,9 +59,26 @@ const JWT_SECRET = "supersecretkey";
 // ===== REGISTER =====
 app.post("/auth/register", async (req, res) => {
   try {
-    const { name, email, college, pass_out_year, password } = req.body;
-    if (!name || !email || !password || !pass_out_year) {
+    const { name, email, college, pass_out_year, password, role, department, phone } = req.body;
+    
+    // Validate required fields
+    if (!name || !email || !password || !role) {
       return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    // Validate role
+    const validRoles = ['student', 'college'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ error: "Invalid role. Only student and college registration allowed." });
+    }
+
+    // Role-specific validation
+    if (role === 'student' && !pass_out_year) {
+      return res.status(400).json({ error: "Pass out year is required for students" });
+    }
+
+    if (role === 'college' && !department) {
+      return res.status(400).json({ error: "Department is required for college users" });
     }
 
     const existingUser = await pool.query("SELECT * FROM profile WHERE email=$1", [email]);
@@ -68,10 +89,10 @@ app.post("/auth/register", async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const result = await pool.query(
-      `INSERT INTO profile (name, email, college, pass_out_year, password)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, name, email, college, pass_out_year`,
-      [name, email, college, pass_out_year, hashedPassword]
+      `INSERT INTO profile (name, email, role, college, pass_out_year, department, phone, password)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id, name, email, role, college, pass_out_year, department, phone`,
+      [name, email, role, college || null, pass_out_year || null, department || null, phone || null, hashedPassword]
     );
 
     res.json({ message: "User registered successfully", user: result.rows[0] });
@@ -84,17 +105,22 @@ app.post("/auth/register", async (req, res) => {
 // ===== LOGIN =====
 app.post("/auth/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, role } = req.body;
     if (!email || !password) return res.status(400).json({ error: "Missing email or password" });
 
     const userResult = await pool.query("SELECT * FROM profile WHERE email=$1", [email]);
     const user = userResult.rows[0];
     if (!user) return res.status(400).json({ error: "User not found" });
 
+    // Verify role matches if provided
+    if (role && user.role !== role) {
+      return res.status(400).json({ error: `Invalid credentials for ${role} login` });
+    }
+
     const match = await bcrypt.compare(password, user.password);
     if (!match) return res.status(400).json({ error: "Incorrect password" });
 
-    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: "1h" });
+    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: "1h" });
 
     res.json({
       token,
@@ -102,8 +128,11 @@ app.post("/auth/login", async (req, res) => {
         id: user.id,
         name: user.name,
         email: user.email,
+        role: user.role,
         college: user.college,
         pass_out_year: user.pass_out_year,
+        department: user.department,
+        phone: user.phone,
       },
     });
   } catch (err) {
@@ -116,7 +145,10 @@ app.post("/auth/login", async (req, res) => {
 app.get("/profile/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query("SELECT id, name, email, college, pass_out_year FROM profile WHERE id=$1", [id]);
+    const result = await pool.query(
+      "SELECT id, name, email, role, college, pass_out_year, department, phone FROM profile WHERE id=$1", 
+      [id]
+    );
     if (result.rows.length === 0) return res.status(404).json({ error: "Profile not found" });
 
     res.json(result.rows[0]);
