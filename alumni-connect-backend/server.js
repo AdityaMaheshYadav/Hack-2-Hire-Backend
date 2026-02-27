@@ -237,6 +237,96 @@ const JWT_SECRET = "supersecretkey";
       )`
     );
     console.log("✅ Notifications table ready");
+
+    // Placement Tracking Tables
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS student_placements (
+        id SERIAL PRIMARY KEY,
+        student_id INT UNIQUE REFERENCES profile(id) ON DELETE CASCADE,
+        cgpa DECIMAL(3,2),
+        eligibility_status VARCHAR(50) DEFAULT 'Eligible',
+        companies_applied INT DEFAULT 0,
+        current_status VARCHAR(50) DEFAULT 'Not Applied',
+        offer_count INT DEFAULT 0,
+        package_offered DECIMAL(10,2),
+        graduation_year INT,
+        is_placed BOOLEAN DEFAULT false,
+        placement_date TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+    console.log("✅ Student Placements table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS company_drives (
+        id SERIAL PRIMARY KEY,
+        company_name VARCHAR(200) NOT NULL,
+        job_role VARCHAR(200),
+        package_offered DECIMAL(10,2),
+        drive_date DATE,
+        drive_mode VARCHAR(50) DEFAULT 'Online',
+        eligibility_criteria TEXT,
+        students_applied INT DEFAULT 0,
+        students_shortlisted INT DEFAULT 0,
+        students_selected INT DEFAULT 0,
+        drive_status VARCHAR(50) DEFAULT 'Upcoming',
+        college_id INT REFERENCES profile(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+    console.log("✅ Company Drives table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS offer_letters (
+        id SERIAL PRIMARY KEY,
+        student_id INT REFERENCES profile(id) ON DELETE CASCADE,
+        company_name VARCHAR(200) NOT NULL,
+        offer_type VARCHAR(50) DEFAULT 'Full-time',
+        package_amount DECIMAL(10,2),
+        file_url TEXT,
+        verification_status VARCHAR(50) DEFAULT 'Pending',
+        verified_by INT REFERENCES profile(id),
+        verification_date TIMESTAMP,
+        rejection_reason TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+    console.log("✅ Offer Letters table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS internships (
+        id SERIAL PRIMARY KEY,
+        student_id INT REFERENCES profile(id) ON DELETE CASCADE,
+        company_name VARCHAR(200) NOT NULL,
+        stipend DECIMAL(10,2),
+        start_date DATE,
+        end_date DATE,
+        has_ppo BOOLEAN DEFAULT false,
+        ppo_converted BOOLEAN DEFAULT false,
+        ppo_package DECIMAL(10,2),
+        internship_status VARCHAR(50) DEFAULT 'Ongoing',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+    console.log("✅ Internships table ready");
+
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS drive_applications (
+        id SERIAL PRIMARY KEY,
+        drive_id INT REFERENCES company_drives(id) ON DELETE CASCADE,
+        student_id INT REFERENCES profile(id) ON DELETE CASCADE,
+        application_status VARCHAR(50) DEFAULT 'Applied',
+        interview_date TIMESTAMP,
+        is_selected BOOLEAN DEFAULT false,
+        offer_package DECIMAL(10,2),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(drive_id, student_id)
+      )`
+    );
+    console.log("✅ Drive Applications table ready");
+
   } catch (err) {
     console.error("❌ Error creating tables:", err);
   }
@@ -1089,6 +1179,338 @@ app.get("/college/analytics", async (req, res) => {
 // ===== TEST ROUTE =====
 app.get("/", (req, res) => {
   res.send("Alumni Connect Backend is running!");
+});
+
+// ===== PLACEMENT TRACKING APIs =====
+
+// Get placement overview statistics
+app.get("/placement/overview/:collegeId", async (req, res) => {
+  try {
+    const { collegeId } = req.params;
+    
+    const stats = await pool.query(`
+      SELECT 
+        COUNT(DISTINCT sp.student_id) as total_students,
+        COUNT(DISTINCT CASE WHEN sp.eligibility_status = 'Eligible' THEN sp.student_id END) as eligible_students,
+        COUNT(DISTINCT CASE WHEN sp.is_placed = true THEN sp.student_id END) as students_placed,
+        COUNT(DISTINCT CASE WHEN sp.is_placed = false AND sp.eligibility_status = 'Eligible' THEN sp.student_id END) as students_unplaced,
+        COUNT(DISTINCT CASE WHEN sp.offer_count > 1 THEN sp.student_id END) as multiple_offers,
+        ROUND(AVG(CASE WHEN sp.is_placed = true THEN sp.package_offered END), 2) as avg_package,
+        MAX(sp.package_offered) as highest_package
+      FROM student_placements sp
+      JOIN profile p ON sp.student_id = p.id
+      WHERE p.college = (SELECT college FROM profile WHERE id = $1)
+    `, [collegeId]);
+    
+    const result = stats.rows[0];
+    const placementPercentage = result.eligible_students > 0 
+      ? ((result.students_placed / result.eligible_students) * 100).toFixed(2)
+      : 0;
+    
+    res.json({ ...result, placement_percentage: placementPercentage });
+  } catch (err) {
+    console.error("Placement overview error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get detailed placement tracking
+app.get("/placement/tracking/:collegeId", async (req, res) => {
+  try {
+    const { collegeId } = req.params;
+    const { department, status, cgpaMin, cgpaMax, year } = req.query;
+    
+    let query = `
+      SELECT 
+        p.id, p.name, p.department, p.pass_out_year,
+        sp.cgpa, sp.eligibility_status, sp.companies_applied,
+        sp.current_status, sp.offer_count, sp.package_offered, sp.is_placed
+      FROM profile p
+      LEFT JOIN student_placements sp ON p.id = sp.student_id
+      WHERE p.role = 'student' AND p.college = (SELECT college FROM profile WHERE id = $1)
+    `;
+    
+    const params = [collegeId];
+    let paramCount = 1;
+    
+    if (department) {
+      paramCount++;
+      query += ` AND p.department = $${paramCount}`;
+      params.push(department);
+    }
+    
+    if (status) {
+      paramCount++;
+      query += ` AND sp.current_status = $${paramCount}`;
+      params.push(status);
+    }
+    
+    if (cgpaMin) {
+      paramCount++;
+      query += ` AND sp.cgpa >= $${paramCount}`;
+      params.push(cgpaMin);
+    }
+    
+    if (cgpaMax) {
+      paramCount++;
+      query += ` AND sp.cgpa <= $${paramCount}`;
+      params.push(cgpaMax);
+    }
+    
+    if (year) {
+      paramCount++;
+      query += ` AND p.pass_out_year = $${paramCount}`;
+      params.push(year);
+    }
+    
+    query += ` ORDER BY p.name`;
+    
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Placement tracking error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get department-wise statistics
+app.get("/placement/department-stats/:collegeId", async (req, res) => {
+  try {
+    const { collegeId } = req.params;
+    
+    const result = await pool.query(`
+      SELECT 
+        p.department,
+        COUNT(DISTINCT p.id) as total_students,
+        COUNT(DISTINCT CASE WHEN sp.eligibility_status = 'Eligible' THEN p.id END) as eligible_students,
+        COUNT(DISTINCT CASE WHEN sp.is_placed = true THEN p.id END) as students_placed,
+        ROUND(AVG(CASE WHEN sp.is_placed = true THEN sp.package_offered END), 2) as avg_package,
+        MAX(sp.package_offered) as highest_package
+      FROM profile p
+      LEFT JOIN student_placements sp ON p.id = sp.student_id
+      WHERE p.role = 'student' AND p.college = (SELECT college FROM profile WHERE id = $1)
+      GROUP BY p.department
+      ORDER BY p.department
+    `, [collegeId]);
+    
+    const stats = result.rows.map(row => ({
+      ...row,
+      placement_percentage: row.eligible_students > 0 
+        ? ((row.students_placed / row.eligible_students) * 100).toFixed(2)
+        : 0
+    }));
+    
+    res.json(stats);
+  } catch (err) {
+    console.error("Department stats error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get yearly placement trend
+app.get("/placement/yearly-trend/:collegeId", async (req, res) => {
+  try {
+    const { collegeId } = req.params;
+    
+    const result = await pool.query(`
+      SELECT 
+        p.pass_out_year as year,
+        COUNT(DISTINCT p.id) as total_students,
+        COUNT(DISTINCT CASE WHEN sp.eligibility_status = 'Eligible' THEN p.id END) as eligible_students,
+        COUNT(DISTINCT CASE WHEN sp.is_placed = true THEN p.id END) as students_placed,
+        ROUND(AVG(CASE WHEN sp.is_placed = true THEN sp.package_offered END), 2) as avg_package
+      FROM profile p
+      LEFT JOIN student_placements sp ON p.id = sp.student_id
+      WHERE p.role = 'student' AND p.college = (SELECT college FROM profile WHERE id = $1)
+        AND p.pass_out_year IS NOT NULL
+      GROUP BY p.pass_out_year
+      ORDER BY p.pass_out_year DESC
+      LIMIT 5
+    `, [collegeId]);
+    
+    const trend = result.rows.map(row => ({
+      ...row,
+      placement_percentage: row.eligible_students > 0 
+        ? ((row.students_placed / row.eligible_students) * 100).toFixed(2)
+        : 0
+    }));
+    
+    res.json(trend);
+  } catch (err) {
+    console.error("Yearly trend error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Company Drives APIs
+app.get("/company-drives/:collegeId", async (req, res) => {
+  try {
+    const { collegeId } = req.params;
+    const result = await pool.query(`
+      SELECT * FROM company_drives 
+      WHERE college_id = $1 
+      ORDER BY drive_date DESC
+    `, [collegeId]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch drives error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/company-drives", async (req, res) => {
+  try {
+    const { company_name, job_role, package_offered, drive_date, drive_mode, eligibility_criteria, college_id } = req.body;
+    
+    const result = await pool.query(`
+      INSERT INTO company_drives 
+      (company_name, job_role, package_offered, drive_date, drive_mode, eligibility_criteria, college_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *
+    `, [company_name, job_role, package_offered, drive_date, drive_mode, eligibility_criteria, college_id]);
+    
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Create drive error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/company-drives/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { drive_status, students_applied, students_shortlisted, students_selected } = req.body;
+    
+    const result = await pool.query(`
+      UPDATE company_drives 
+      SET drive_status = $1, students_applied = $2, students_shortlisted = $3, 
+          students_selected = $4, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $5
+      RETURNING *
+    `, [drive_status, students_applied, students_shortlisted, students_selected, id]);
+    
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Update drive error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Offer Letter Verification APIs
+app.get("/offer-letters/:collegeId", async (req, res) => {
+  try {
+    const { collegeId } = req.params;
+    const result = await pool.query(`
+      SELECT ol.*, p.name as student_name, p.department
+      FROM offer_letters ol
+      JOIN profile p ON ol.student_id = p.id
+      WHERE p.college = (SELECT college FROM profile WHERE id = $1)
+      ORDER BY ol.created_at DESC
+    `, [collegeId]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch offers error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/offer-letters/:id/verify", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { verification_status, verified_by, rejection_reason } = req.body;
+    
+    const result = await pool.query(`
+      UPDATE offer_letters 
+      SET verification_status = $1, verified_by = $2, rejection_reason = $3, 
+          verification_date = CURRENT_TIMESTAMP
+      WHERE id = $4
+      RETURNING *
+    `, [verification_status, verified_by, rejection_reason, id]);
+    
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Verify offer error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Internship Tracking APIs
+app.get("/internships/:collegeId", async (req, res) => {
+  try {
+    const { collegeId } = req.params;
+    const result = await pool.query(`
+      SELECT i.*, p.name as student_name, p.department
+      FROM internships i
+      JOIN profile p ON i.student_id = p.id
+      WHERE p.college = (SELECT college FROM profile WHERE id = $1)
+      ORDER BY i.start_date DESC
+    `, [collegeId]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Fetch internships error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/internships", async (req, res) => {
+  try {
+    const { student_id, company_name, stipend, start_date, end_date, has_ppo } = req.body;
+    
+    const result = await pool.query(`
+      INSERT INTO internships 
+      (student_id, company_name, stipend, start_date, end_date, has_ppo)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING *
+    `, [student_id, company_name, stipend, start_date, end_date, has_ppo]);
+    
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Create internship error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/internships/:id/ppo", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { ppo_converted, ppo_package } = req.body;
+    
+    const result = await pool.query(`
+      UPDATE internships 
+      SET ppo_converted = $1, ppo_package = $2
+      WHERE id = $3
+      RETURNING *
+    `, [ppo_converted, ppo_package, id]);
+    
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Update PPO error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update student placement data
+app.post("/placement/student", async (req, res) => {
+  try {
+    const { student_id, cgpa, eligibility_status, companies_applied, current_status, offer_count, package_offered, is_placed, graduation_year } = req.body;
+    
+    const result = await pool.query(`
+      INSERT INTO student_placements 
+      (student_id, cgpa, eligibility_status, companies_applied, current_status, offer_count, package_offered, is_placed, graduation_year)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      ON CONFLICT (student_id) 
+      DO UPDATE SET 
+        cgpa = $2, eligibility_status = $3, companies_applied = $4, 
+        current_status = $5, offer_count = $6, package_offered = $7, 
+        is_placed = $8, graduation_year = $9, updated_at = CURRENT_TIMESTAMP
+      RETURNING *
+    `, [student_id, cgpa, eligibility_status, companies_applied, current_status, offer_count, package_offered, is_placed, graduation_year]);
+    
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Update placement error:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ===== START SERVER =====
